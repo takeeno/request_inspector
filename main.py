@@ -5,10 +5,19 @@ import os
 app = FastAPI()
 
 @app.get("/")
-async def check_proxy(request: Request):
+async def get_all_info(request: Request):
     return {
-        "client_ip": request.client.host,
-        "headers": dict(request.headers)
+        "client": {
+            "host": request.client.host,
+            "port": request.client.port
+        },
+        "url": str(request.url),
+        "method": request.method,
+        "base_url": str(request.base_url),
+        "headers": dict(request.headers),
+        "query_params": dict(request.query_params),
+        "cookies": request.cookies,
+        "path_params": request.path_params
     }
 
 if __name__ == "__main__":
