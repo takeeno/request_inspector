@@ -6,49 +6,58 @@ import os
 app = FastAPI()
 
 @app.get("/")
-async def get_all_headers_json(request: Request):
-  # 1. 全ヘッダーを取得
-  headers = dict(request.headers)
-  
-  # 2. ASGIスコープからシリアライズ可能な情報を抽出
+async def ultra_check_proxy(request: Request):
+  # 1. ASGIスコープ（FastAPI/Uvicornが保持する全生データ）
   scope = request.scope
-  scope_serializable = {}
-  for k, v in scope.items():
-    if isinstance(v, (str, int, float, bool, list, dict)):
-      scope_serializable[k] = v
-    elif isinstance(v, bytes):
-      scope_serializable[k] = v.decode('utf-8', errors='ignore')
+  
+  # 2. 生のヘッダーリスト（bytesのペアとして保持されているもの）
+  # これにより、大文字小文字の区別や、重複ヘッダーの生の状態が見える
+  raw_headers = []
+  for key, value in scope.get("headers", []):
+    raw_headers.append({
+      "raw_key": key.decode('latin-1'),
+      "raw_value": value.decode('latin-1')
+    })
 
-  # 3. レスポンス用データの構築
+  # 3. クライアント情報の深掘り
+  client_host, client_port = scope.get("client", (None, None))
+
+  # 4. JSON構造の構築
   content = {
-    "status": "success",
-    "client": {
-      "ip": request.client.host,
-      "port": request.client.port,
-    },
-    "request": {
+    "summary": {
       "method": request.method,
       "url": str(request.url),
-      "path": request.url.path,
-      "query_params": dict(request.query_params),
+      "client_ip_detected": request.client.host,
     },
-    "headers": headers,
+    # FastAPIがパースした後のヘッダー（小文字統一）
+    "parsed_headers": dict(request.headers),
+    # ネットワーク層から届いたままの生ヘッダー（重複やケースを保持）
+    "raw_headers_list": raw_headers,
+    # クッキー
     "cookies": dict(request.cookies),
-    "asgi_scope": scope_serializable
+    # ASGIスコープの全容（シリアライズ可能なもの）
+    "asgi_raw_scope": {
+      "type": scope.get("type"),
+      "http_version": scope.get("http_version"),
+      "scheme": scope.get("scheme"),
+      "client": list(scope.get("client", [])),
+      "server": list(scope.get("server", [])),
+      "root_path": scope.get("root_path"),
+    }
   }
 
-  # Bodyがある場合は追加
+  # Body（POSTなど）の読み取り
   try:
     body = await request.body()
     if body:
-      content["body_raw"] = body.decode('utf-8', errors='ignore')
-  except Exception:
-    pass
+      content["body_content"] = body.decode('utf-8', errors='ignore')
+      content["body_len"] = len(body)
+  except Exception as e:
+    content["body_error"] = str(e)
 
-  # JSONResponseを使い、インデントを整えて(JSON_AS_ASCII=False相当)返却
   return JSONResponse(content=content)
 
 if __name__ == "__main__":
   port = int(os.environ.get("PORT", 8000))
-  # 0.0.0.0でホストすることで、外部（プロキシ）からのアクセスを待ち受け可能に
+  # 外部接続を許可
   uvicorn.run(app, host="0.0.0.0", port=port)
