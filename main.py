@@ -2,74 +2,64 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 import uvicorn
 import os
+import json
 
 app = FastAPI()
 
-def safe_serialize(obj):
-  """JSONに変換できない型を安全に文字列化するヘルパー"""
-  if isinstance(obj, (str, int, float, bool, type(None))):
-    return obj
+def force_serializable(obj):
+  """
+  bytes, tuple, setなど、JSONにできないあらゆる型を
+  再帰的にスキャンして安全な型（str, list, dict）に変換する
+  """
   if isinstance(obj, bytes):
     return obj.decode('latin-1', errors='ignore')
-  if isinstance(obj, (list, tuple)):
-    return [safe_serialize(item) for item in obj]
+  if isinstance(obj, (list, tuple, set)):
+    return [force_serializable(item) for item in obj]
   if isinstance(obj, dict):
-    return {str(k): safe_serialize(v) for k, v in obj.items()}
+    return {
+      (k.decode('latin-1', errors='ignore') if isinstance(k, bytes) else str(k)): force_serializable(v)
+      for k, v in obj.items()
+    }
+  if isinstance(obj, (str, int, float, bool, type(None))):
+    return obj
   return str(obj)
 
 @app.get("/")
-async def ultra_check_proxy(request: Request):
+async def ultra_stable_check(request: Request):
   try:
     scope = request.scope
     
-    # 1. 生のヘッダーリスト（bytesのペア）を確実に取得
-    raw_headers = []
-    for key, value in scope.get("headers", []):
-      raw_headers.append({
-        "key": key.decode('latin-1', errors='ignore'),
-        "value": value.decode('latin-1', errors='ignore')
-      })
-
-    # 2. ボディの読み取り（タイムアウトやエラーを考慮）
-    body_content = ""
+    # ボディ読み取り
+    body_str = ""
     try:
+      # タイムアウト等で読み取れない場合に備える
       body_bytes = await request.body()
-      if body_bytes:
-        body_content = body_bytes.decode('utf-8', errors='ignore')
+      body_str = body_bytes.decode('utf-8', errors='ignore')
     except Exception:
-      body_content = "Could not read body"
+      body_str = "[Body not readable]"
 
-    # 3. すべての情報を安全に辞書にまとめる
-    content = {
+    # すべての情報を構築
+    raw_data = {
       "summary": {
         "method": request.method,
         "url": str(request.url),
-        "client_ip": request.client.host if request.client else None,
-        "client_port": request.client.port if request.client else None,
+        "client": list(request.client) if request.client else None,
       },
       "parsed_headers": dict(request.headers),
-      "raw_headers": raw_headers,
       "cookies": dict(request.cookies),
       "query_params": dict(request.query_params),
-      "asgi_scope": {
-        "type": scope.get("type"),
-        "http_version": scope.get("http_version"),
-        "scheme": scope.get("scheme"),
-        "root_path": scope.get("root_path"),
-        # ここで safe_serialize を使い、タプル等の型エラーを回避
-        "client": safe_serialize(scope.get("client")),
-        "server": safe_serialize(scope.get("server")),
-      },
-      "body": body_content
+      # ここで scope 全体を完全にクリーンアップする
+      "asgi_scope": force_serializable(scope),
+      "body": body_str
     }
 
-    return JSONResponse(content=content)
+    return JSONResponse(content=raw_data)
 
   except Exception as e:
-    # 万が一エラーが起きても、その内容自体をJSONで返す
+    # 最後の砦：ここでもエラーが出る場合は文字列として返す
     return JSONResponse(
       status_code=500,
-      content={"error": "Internal Server Error", "details": str(e)}
+      content={"error": "Serialization failed", "msg": str(e)}
     )
 
 if __name__ == "__main__":
