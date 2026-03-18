@@ -1,53 +1,54 @@
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 import uvicorn
 import os
-import json
 
 app = FastAPI()
 
 @app.get("/")
-async def dump_all_details(request: Request):
-  # 1. 標準的なヘッダーをすべて辞書化
+async def get_all_headers_json(request: Request):
+  # 1. 全ヘッダーを取得
   headers = dict(request.headers)
   
-  # 2. ASGIスコープ（FastAPIの裏側の全生データ）を取得
-  # ここには接続元のIP、プロトコル、サーバー情報などが未加工で入っています
+  # 2. ASGIスコープからシリアライズ可能な情報を抽出
   scope = request.scope
-  
-  # シリアライズ可能なものだけ抽出
-  scope_details = {}
+  scope_serializable = {}
   for k, v in scope.items():
     if isinstance(v, (str, int, float, bool, list, dict)):
-      scope_details[k] = v
+      scope_serializable[k] = v
     elif isinstance(v, bytes):
-      scope_details[k] = v.decode('utf-8', errors='ignore')
+      scope_serializable[k] = v.decode('utf-8', errors='ignore')
 
-  result = {
-    "--- ALL_HEADERS ---": headers,
-    "--- RAW_SCOPE_DETAILS ---": scope_details,
-    "--- CLIENT_INFO ---": {
-      "host": request.client.host,
+  # 3. レスポンス用データの構築
+  content = {
+    "status": "success",
+    "client": {
+      "ip": request.client.host,
       "port": request.client.port,
     },
-    "--- REQUEST_METADATA ---": {
+    "request": {
       "method": request.method,
       "url": str(request.url),
       "path": request.url.path,
-      "query_string": request.url.query,
-    }
+      "query_params": dict(request.query_params),
+    },
+    "headers": headers,
+    "cookies": dict(request.cookies),
+    "asgi_scope": scope_serializable
   }
 
-  # Body（POSTなどの場合）
+  # Bodyがある場合は追加
   try:
     body = await request.body()
     if body:
-      result["--- RAW_BODY ---"] = body.decode('utf-8', errors='ignore')
-  except Exception as e:
-    result["body_error"] = str(e)
-    
-  return result
+      content["body_raw"] = body.decode('utf-8', errors='ignore')
+  except Exception:
+    pass
+
+  # JSONResponseを使い、インデントを整えて(JSON_AS_ASCII=False相当)返却
+  return JSONResponse(content=content)
 
 if __name__ == "__main__":
-  # ポートは環境変数から取得（デプロイ先対応）
   port = int(os.environ.get("PORT", 8000))
+  # 0.0.0.0でホストすることで、外部（プロキシ）からのアクセスを待ち受け可能に
   uvicorn.run(app, host="0.0.0.0", port=port)
