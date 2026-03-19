@@ -2,15 +2,21 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 import uvicorn
 import os
-import json
+import socket # 逆引き用に追加
 
 app = FastAPI()
 
+def get_hostname(ip):
+  """IPアドレスからホスト名を逆引きする"""
+  try:
+    # タイムアウトを考慮し、 gethostbyaddr で逆引きを実行
+    hostname, _, _ = socket.gethostbyaddr(ip)
+    return hostname
+  except Exception:
+    # 逆引きできない場合はNoneまたはエラー表示
+    return "Unknown / No PTR record"
+
 def force_serializable(obj):
-  """
-  bytes, tuple, setなど、JSONにできないあらゆる型を
-  再帰的にスキャンして安全な型（str, list, dict）に変換する
-  """
   if isinstance(obj, bytes):
     return obj.decode('latin-1', errors='ignore')
   if isinstance(obj, (list, tuple, set)):
@@ -20,47 +26,37 @@ def force_serializable(obj):
       (k.decode('latin-1', errors='ignore') if isinstance(k, bytes) else str(k)): force_serializable(v)
       for k, v in obj.items()
     }
-  if isinstance(obj, (str, int, float, bool, type(None))):
-    return obj
-  return str(obj)
+  return obj if isinstance(obj, (str, int, float, bool, type(None))) else str(obj)
 
 @app.get("/")
-async def ultra_stable_check(request: Request):
+async def ultra_check_with_hostname(request: Request):
   try:
+    client_ip = request.client.host if request.client else "0.0.0.0"
+    # 逆引き実行
+    reverse_dns = get_hostname(client_ip)
+    
     scope = request.scope
     
-    # ボディ読み取り
-    body_str = ""
-    try:
-      # タイムアウト等で読み取れない場合に備える
-      body_bytes = await request.body()
-      body_str = body_bytes.decode('utf-8', errors='ignore')
-    except Exception:
-      body_str = "[Body not readable]"
-
-    # すべての情報を構築
-    raw_data = {
+    content = {
       "summary": {
         "method": request.method,
         "url": str(request.url),
-        "client": list(request.client) if request.client else None,
+        "client_ip": client_ip,
+        "client_hostname": reverse_dns, # ここにドメインを表示
+        "client_port": request.client.port if request.client else 0
       },
       "parsed_headers": dict(request.headers),
-      "cookies": dict(request.cookies),
-      "query_params": dict(request.query_params),
-      # ここで scope 全体を完全にクリーンアップする
-      "asgi_scope": force_serializable(scope),
-      "body": body_str
+      "raw_headers": [
+        {"key": k.decode('latin-1'), "value": v.decode('latin-1')} 
+        for k, v in scope.get("headers", [])
+      ],
+      "asgi_scope": force_serializable(scope)
     }
 
-    return JSONResponse(content=raw_data)
+    return JSONResponse(content=content)
 
   except Exception as e:
-    # 最後の砦：ここでもエラーが出る場合は文字列として返す
-    return JSONResponse(
-      status_code=500,
-      content={"error": "Serialization failed", "msg": str(e)}
-    )
+    return JSONResponse(status_code=500, content={"error": str(e)})
 
 if __name__ == "__main__":
   port = int(os.environ.get("PORT", 8000))
