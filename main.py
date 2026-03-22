@@ -3,9 +3,28 @@ from fastapi.responses import JSONResponse
 import uvicorn
 import os
 import socket
-import tldextract  # ドメイン抽出用
+import tldextract
+import geoip2.database
+from contextlib import asynccontextmanager
 
-app = FastAPI()
+# --- GeoLite2 セットアップ ---
+DB_PATH = "GeoLite2-Country.mmdb"
+reader = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # アプリ起動時にDBをロード
+    global reader
+    if os.path.exists(DB_PATH):
+        reader = geoip2.database.Reader(DB_PATH)
+    yield
+    # アプリ終了時にリソースを解放
+    if reader:
+        reader.close()
+
+app = FastAPI(lifespan=lifespan)
+
+# --- ユーティリティ関数 ---
 
 def get_hostname(ip):
     """IPアドレスからホスト名を逆引きする"""
@@ -16,7 +35,7 @@ def get_hostname(ip):
         return "Unknown / No PTR record"
 
 def get_root_domain(hostname):
-    """ホスト名からルートドメイン(enabler.ne.jp等)を抽出する"""
+    """ホスト名からルートドメインを抽出する"""
     if not hostname or "Unknown" in hostname:
         return "N/A"
     ext = tldextract.extract(hostname)
@@ -24,18 +43,30 @@ def get_root_domain(hostname):
         return f"{ext.domain}.{ext.suffix}"
     return "N/A"
 
+def get_country_name(ip):
+    """GeoLite2を使用して国名(日本語)を取得する"""
+    if not reader:
+        return "Database not loaded"
+    try:
+        if ip in ("127.0.0.1", "0.0.0.0", "localhost"):
+            return "Local Network"
+        response = reader.country(ip)
+        # 日本語名があれば取得、なければ英語名
+        return response.country.names.get('ja', response.country.name)
+    except Exception:
+        return "Unknown"
+
 def check_anonymity(headers, client_ip):
     """プロキシの匿名性レベルを判定する"""
-    # 判定に使用するヘッダー
     proxy_headers = ["via", "proxy-connection", "forwarded", "x-forwarded-for", "x-real-ip", "x-proxyuser-ip"]
     headers_lower = {k.lower(): v for k, v in headers.items()}
     
-    # 1. Transparent チェック (ヘッダーの中にクライアントIPが含まれているか)
+    # 1. Transparent チェック
     for h_value in headers_lower.values():
         if client_ip in h_value:
             return "L3 - Transparent (Low Anonymity)"
     
-    # 2. Anonymous チェック (プロキシ特有のヘッダーがあるか)
+    # 2. Anonymous チェック
     if any(h in headers_lower for h in proxy_headers):
         return "L2 - Anonymous (Medium Anonymity)"
     
@@ -43,6 +74,7 @@ def check_anonymity(headers, client_ip):
     return "L1 - Elite (High Anonymity)"
 
 def force_serializable(obj):
+    """JSON変換不可能なオブジェクトを文字列に変換する"""
     if isinstance(obj, bytes):
         return obj.decode('latin-1', errors='ignore')
     if isinstance(obj, (list, tuple, set)):
@@ -54,11 +86,16 @@ def force_serializable(obj):
         }
     return obj if isinstance(obj, (str, int, float, bool, type(None))) else str(obj)
 
+# --- メインルート ---
+
 @app.get("/")
 async def ultra_check_with_hostname(request: Request):
     try:
-        # X-Forwarded-For を無視し、直接の接続元（プロキシ等）のIPを取得する
+        # 【修正】X-Forwarded-Forを無視し、直接の接続元(プロキシのIP)を取得
         client_ip = request.client.host if request.client else "0.0.0.0"
+
+        # 【追加】国情報の取得
+        country = get_country_name(client_ip)
         
         # 逆引き実行
         reverse_dns = get_hostname(client_ip)
@@ -66,17 +103,18 @@ async def ultra_check_with_hostname(request: Request):
         root_domain = get_root_domain(reverse_dns)
         # 匿名性判定
         anonymity = check_anonymity(request.headers, client_ip)
-        
+
         scope = request.scope
-        
+
         content = {
             "summary": {
                 "method": request.method,
                 "url": str(request.url),
                 "client_ip": client_ip,
+                "client_country": country,      # 追加
                 "client_hostname": reverse_dns,
-                "client_domainname": root_domain,  # ← 追加
-                "anonymity_level": anonymity,     # ← 追加
+                "client_domainname": root_domain,
+                "anonymity_level": anonymity,
                 "client_port": request.client.port if request.client else 0
             },
             "parsed_headers": dict(request.headers),
