@@ -44,15 +44,16 @@ def get_root_domain(hostname):
     return "N/A"
 
 def get_country_name(ip):
-    """GeoLite2を使用して国名(日本語)を取得する"""
+    """GeoLite2を使用して国コード(例: JP, US)を取得する"""
     if not reader:
-        return "Database not loaded"
+        return "DB error"
     try:
         if ip in ("127.0.0.1", "0.0.0.0", "localhost"):
-            return "Local Network"
+            return "Local"
+            
         response = reader.country(ip)
-        # 日本語名があれば取得、なければ英語名
-        return response.country.names.get('ja', response.country.name)
+        # .iso_code を使用することで 'JP' や 'US' などの2文字コードを取得
+        return response.country.iso_code if response.country.iso_code else "Unknown"
     except Exception:
         return "Unknown"
 
