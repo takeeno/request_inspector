@@ -57,9 +57,8 @@ def force_serializable(obj):
 @app.get("/")
 async def ultra_check_with_hostname(request: Request):
     try:
-        # Render等の背後にいる場合、本来の接続元IPを取得
-        # (request.client.host は Render のプロキシIPになる場合があるため注意)
-        client_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else "0.0.0.0")
+        # X-Forwarded-For を無視し、直接の接続元（プロキシ等）のIPを取得する
+        client_ip = request.client.host if request.client else "0.0.0.0"
         
         # 逆引き実行
         reverse_dns = get_hostname(client_ip)
