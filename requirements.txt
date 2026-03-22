@@ -1,3 +1,5 @@
 fastapi
 uvicorn[standard]
 tldextract
+geoip2
+requests
